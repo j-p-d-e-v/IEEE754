@@ -8,60 +8,60 @@ impl IEEE754 {
         Self { values }
     }
 
-    pub fn to_binary(&self) -> Result<Vec<u8>, String> {
+    pub fn to_binary(&self) -> Result<Vec<u8>, ValidationError> {
         let mut binaries: Vec<u8> = Vec::new();
         if self.values.is_empty() {
-            return Err("no values found".to_string());
+            return Err(ValidationError::EmptyValues);
         }
         for v in self.values.iter() {
-            binaries.append(
-                &mut format!("{:08b}", v)
-                    .chars()
-                    .map(|x| match u8::from_str_radix(&x.to_string(), 2) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            panic!("unable to parse value: {:?}", error);
-                        }
-                    })
-                    .collect::<Vec<u8>>(),
-            );
+            for x in &mut format!("{:08b}", v).chars() {
+                match u8::from_str_radix(&x.to_string(), 2) {
+                    Ok(value) => binaries.push(value),
+                    Err(_) => return Err(ValidationError::ParseError),
+                }
+            }
         }
         Ok(binaries)
     }
 
-    fn get_sign_bit(&self, binaries: &[u8]) -> Result<i8, String> {
+    fn get_sign_bit(&self, binaries: &[u8]) -> Result<i8, ValidationError> {
         if binaries.is_empty() {
-            return Err("values are empty".to_string());
+            return Err(ValidationError::EmptySignBit);
         }
         match binaries.first() {
             Some(value) => Ok(if value == &0 { 1 } else { -1 }),
-            None => Err("invalid sign bit".to_string()),
+            None => Err(ValidationError::InvalidSignBit),
         }
     }
 
-    pub fn to_64bit(&self) -> Result<f64, String> {
+    pub fn to_64bit(&self) -> Result<f64, ValidationError> {
         let binaries: Vec<u8> = self.to_binary()?;
         let sign_bit: i8 = self.get_sign_bit(&binaries)?;
 
         // Exponent
         match binaries.get(1..12) {
             Some(exponent_binaries) => {
-                let exponent: f64 = IEEE754_64bit::get_exponent(exponent_binaries)?;
                 // Mantissa
                 match binaries.get(12..) {
                     Some(mantissa_binaries) => {
+                        if let Err(error) =
+                            IEEE754_64bit::validate(exponent_binaries, mantissa_binaries)
+                        {
+                            return Err(error);
+                        }
+                        let exponent: f64 = IEEE754_64bit::get_exponent(exponent_binaries)?;
                         let mantissa: f64 = IEEE754_64bit::get_mantissa(mantissa_binaries)?;
                         let value = exponent * mantissa;
                         match sign_bit {
                             1 => Ok(value),
                             -1 => Ok(-(value)),
-                            _ => Err("invalid sign bit".to_string()),
+                            _ => Err(ValidationError::InvalidSignBit),
                         }
                     }
-                    None => Err("binaries for mantissa not found".to_string()),
+                    None => Err(ValidationError::InvalidMantissa),
                 }
             }
-            None => Err("binaries for exponent not found".to_string()),
+            None => Err(ValidationError::InvalidExponent),
         }
     }
 
@@ -71,10 +71,46 @@ impl IEEE754 {
 }
 
 #[derive(Debug)]
+pub enum ValidationError {
+    ExponentAll1s,
+    MantissaAll0s,
+    InvalidBitLength,
+    InvalidMantissaFirstBitValue,
+    ParseError,
+    EmptyValues,
+    InvalidSignBit,
+    InvalidExponent,
+    InvalidMantissa,
+    EmptySignBit,
+    EmptyExponent,
+    EmptyMantissa,
+}
+
+#[derive(Debug)]
 pub struct IEEE754_64bit {}
 
 impl IEEE754_64bit {
-    pub fn get_exponent(binaries: &[u8]) -> Result<f64, String> {
+    pub fn validate(
+        exponent_binaries: &[u8],
+        mantissa_binaries: &[u8],
+    ) -> Result<(), ValidationError> {
+        if exponent_binaries.len() != 11 {
+            return Err(ValidationError::InvalidBitLength);
+        }
+        // Infitnity Validation
+        let all_1s: &[u8; 11] = &[1; 11];
+        let all_0s: &[u8; 11] = &[0; 11];
+        if exponent_binaries == all_1s {
+            return Err(ValidationError::ExponentAll1s);
+        }
+        if mantissa_binaries == all_0s {
+            return Err(ValidationError::MantissaAll0s);
+        }
+
+        Ok(())
+    }
+
+    pub fn get_exponent(binaries: &[u8]) -> Result<f64, ValidationError> {
         let value_str: String = binaries
             .iter()
             .map(|x| x.to_string())
@@ -86,14 +122,14 @@ impl IEEE754_64bit {
                 let exponent: f64 = 2i32.pow(value - bias) as f64;
                 Ok(exponent)
             }
-            Err(_error) => Err("unable to parse exponent binaries".to_string()),
+            Err(_error) => Err(ValidationError::ParseError),
         }
     }
 
-    pub fn get_mantissa(binaries: &[u8]) -> Result<f64, String> {
+    pub fn get_mantissa(binaries: &[u8]) -> Result<f64, ValidationError> {
         let first_bit: &u8 = match binaries.first() {
             Some(value) => value,
-            None => return Err("invalid first mantissa bit value".to_string()),
+            None => return Err(ValidationError::InvalidMantissaFirstBitValue),
         };
         let starting_index: usize = if first_bit == &0 { 1 } else { 0 };
 
@@ -106,7 +142,7 @@ impl IEEE754_64bit {
                 }
                 Ok(mantissa)
             }
-            None => Err("unable to get mantissa binaries".to_string()),
+            None => Err(ValidationError::EmptyMantissa),
         }
     }
 }
@@ -137,10 +173,41 @@ mod tests {
         println!("Expected Output: {}", -3.125);
         assert_eq!(-3.125, test.to_64bit().unwrap());
 
+        // Infinity
+        let values = vec![0x7f, 0xf0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
+        let test: IEEE754 = IEEE754::new(values.clone());
+        println!("Input: {:x?}", values);
+        println!("Expected Output: Error");
+        assert!(test.to_64bit().is_err());
+
         // -Infinity
-        // Still need to catch the exception
-        // let values = vec![0x7f, 0xf0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
-        // let test: IEEE754 = IEEE754::new(values);
-        // println!("{:?}", test.to_64bit().unwrap());
+        let values = vec![0xff, 0xf0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
+        let test: IEEE754 = IEEE754::new(values.clone());
+        println!("Input: {:x?}", values);
+        println!("Expected Output: Error");
+        assert!(test.to_64bit().is_err());
+
+        // Quiet NaN
+        // InProgress
+        let values = vec![0x7f, 0xf8, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
+        let test: IEEE754 = IEEE754::new(values.clone());
+        println!("Input: {:x?}", values);
+        println!("Expected Output: Error");
+        assert!(test.to_64bit().is_err());
+
+        // Signal NaN
+        // InProgress
+        let values = vec![0x7f, 0xf4, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
+        let test: IEEE754 = IEEE754::new(values.clone());
+        println!("Input: {:x?}", values);
+        println!("Expected Output: Error");
+        assert!(test.to_64bit().is_err());
+
+        // 0.0
+        let values = vec![0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
+        let test: IEEE754 = IEEE754::new(values.clone());
+        println!("Input: {:x?}", values);
+        println!("Expected Output: {}", 0.0);
+        assert_eq!(0.0, test.to_64bit().unwrap());
     }
 }
