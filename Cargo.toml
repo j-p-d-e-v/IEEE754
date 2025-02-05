@@ -2,5 +2,14 @@
 name = "ieee-754"
 version = "0.1.0"
 edition = "2021"
+authors = ["JP Mateo <jpmateo022@gmail.com>"]
+description = "A library to convert a hexadecimal value to a 32-bit or 64-bit floating-point precision following the IEEE 754 standard."
+license = "MIT"
+repository = "https://github.com/j-p-d-e-v/IEEE754"
+keywords = ["ieee754", "packets", "floating-point", "f32", "f64"]
+categories = ["parsing ", "value-formatting"]
+homepage = "https://github.com/j-p-d-e-v/IEEE754"
+documentation = "https://docs.rs/ieee-754"
+readme = "README.md"
 
 [dependencies]
