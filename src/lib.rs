@@ -45,10 +45,8 @@ impl IEEE754 {
                 match binaries.get(12..) {
                     Some(mantissa_binaries) => {
                         IEEE754_64bit::validate(exponent_binaries, mantissa_binaries)?;
-                        let exponent: (f64, bool) = IEEE754_64bit::get_exponent(exponent_binaries)?;
-                        let mantissa: f64 =
-                            IEEE754_64bit::get_mantissa(mantissa_binaries, exponent.1)?;
-                        let value = exponent.0 * mantissa;
+                        let exponent: i32 = IEEE754_64bit::get_exponent(exponent_binaries)?;
+                        let value: f64 = IEEE754_64bit::get_mantissa(mantissa_binaries, exponent)?;
                         match sign_bit {
                             1 => Ok(value),
                             -1 => Ok(-(value)),
@@ -73,10 +71,8 @@ impl IEEE754 {
                 match binaries.get(9..) {
                     Some(mantissa_binaries) => {
                         IEEE754_32bit::validate(exponent_binaries, mantissa_binaries)?;
-                        let exponent: (f32, bool) = IEEE754_32bit::get_exponent(exponent_binaries)?;
-                        let mantissa: f32 =
-                            IEEE754_32bit::get_mantissa(mantissa_binaries, exponent.1)?;
-                        let value = exponent.0 * mantissa;
+                        let exponent: i32 = IEEE754_32bit::get_exponent(exponent_binaries)?;
+                        let value: f32 = IEEE754_32bit::get_mantissa(mantissa_binaries, exponent)?;
                         match sign_bit {
                             1 => Ok(value),
                             -1 => Ok(-(value)),
@@ -96,12 +92,13 @@ pub enum ValidationError {
     ExponentAll1s,
     MantissaAll0s,
     InvalidBitLength,
-    InvalidMantissaFirstTwoBitsValue,
     ParseError,
     EmptyValues,
     InvalidSignBit,
     InvalidExponent,
     InvalidMantissa,
+    InvalidMSBMantissa,
+    InvalidLSBMantissa,
     EmptySignBit,
     EmptyExponent,
     EmptyMantissa,
@@ -131,43 +128,53 @@ impl IEEE754_64bit {
         Ok(())
     }
 
-    pub fn get_exponent(binaries: &[u8]) -> Result<(f64, bool), ValidationError> {
+    pub fn get_exponent(binaries: &[u8]) -> Result<i32, ValidationError> {
         let value_str: String = binaries
             .iter()
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
             .concat();
-        let normalize: bool = [0; 11] != binaries;
 
         match u32::from_str_radix(&value_str, 2) {
             Ok(value) => {
-                let bias: i32 = if normalize { 1023 } else { 1022 };
+                if value == 0 {
+                    return Ok(0);
+                }
+                let bias: i32 = 1023;
                 let actual_exponent: i32 = value as i32 - bias;
-                let exponent: f64 = 2f64.powi(actual_exponent);
-                Ok((exponent, normalize))
+                Ok(actual_exponent)
             }
             Err(_error) => Err(ValidationError::ParseError),
         }
     }
 
-    pub fn get_mantissa(binaries: &[u8], normalize: bool) -> Result<f64, ValidationError> {
-        let first_two_bits: &[u8] = match binaries.get(..2) {
-            Some(values) => values,
-            None => return Err(ValidationError::InvalidMantissaFirstTwoBitsValue),
-        };
-        let starting_index: usize = if first_two_bits == [0; 2] && normalize {
-            1
-        } else {
-            0
-        };
-
-        match binaries.get(starting_index..) {
-            Some(values) => {
-                let mut mantissa: f64 = if normalize { 1.0 } else { 0.0 };
-                for (index, value) in values.iter().enumerate() {
-                    mantissa += value.to_owned() as f64 * 2f64.powi(-(index as i32 + 1));
+    pub fn get_mantissa(binaries: &[u8], exponent: i32) -> Result<f64, ValidationError> {
+        if binaries == [0; 52] && exponent == 0 {
+            return Ok(0.0);
+        }
+        match binaries.get(0..exponent as usize) {
+            Some(msb_values) => {
+                let mut msb_values: Vec<u8> = msb_values.to_vec();
+                msb_values.insert(0, 1);
+                let msb_value_str = msb_values
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<String>>()
+                    .concat();
+                match i32::from_str_radix(&msb_value_str, 2) {
+                    Ok(msb_value) => match binaries.get(exponent as usize..) {
+                        Some(lsb_values) => {
+                            let mut lsb_value: f64 = 0.0;
+                            for (index, value) in lsb_values.iter().enumerate() {
+                                lsb_value +=
+                                    value.to_owned() as f64 * 2f64.powi(-(index as i32 + 1));
+                            }
+                            Ok(msb_value as f64 + lsb_value)
+                        }
+                        None => Err(ValidationError::InvalidLSBMantissa),
+                    },
+                    Err(_) => Err(ValidationError::InvalidMSBMantissa),
                 }
-                Ok(mantissa)
             }
             None => Err(ValidationError::EmptyMantissa),
         }
@@ -198,43 +205,53 @@ impl IEEE754_32bit {
         Ok(())
     }
 
-    pub fn get_exponent(binaries: &[u8]) -> Result<(f32, bool), ValidationError> {
+    pub fn get_exponent(binaries: &[u8]) -> Result<i32, ValidationError> {
         let value_str: String = binaries
             .iter()
             .map(|x| x.to_string())
             .collect::<Vec<String>>()
             .concat();
-        let normalize: bool = [0; 8] != binaries;
 
         match u32::from_str_radix(&value_str, 2) {
             Ok(value) => {
-                let bias: i32 = if normalize { 127 } else { 128 };
+                if value == 0 {
+                    return Ok(0);
+                }
+                let bias: i32 = 127;
                 let actual_exponent: i32 = value as i32 - bias;
-                let exponent: f32 = 2f32.powi(actual_exponent);
-                Ok((exponent, normalize))
+                Ok(actual_exponent)
             }
             Err(_error) => Err(ValidationError::ParseError),
         }
     }
 
-    pub fn get_mantissa(binaries: &[u8], normalize: bool) -> Result<f32, ValidationError> {
-        let first_two_bits: &[u8] = match binaries.get(..2) {
-            Some(values) => values,
-            None => return Err(ValidationError::InvalidMantissaFirstTwoBitsValue),
-        };
-        let starting_index: usize = if first_two_bits == [0; 2] && normalize {
-            1
-        } else {
-            0
-        };
-
-        match binaries.get(starting_index..) {
-            Some(values) => {
-                let mut mantissa: f32 = if normalize { 1.0 } else { 0.0 };
-                for (index, value) in values.iter().enumerate() {
-                    mantissa += value.to_owned() as f32 * 2f32.powi(-(index as i32 + 1));
+    pub fn get_mantissa(binaries: &[u8], exponent: i32) -> Result<f32, ValidationError> {
+        if binaries == [0; 23] && exponent == 0 {
+            return Ok(0.0);
+        }
+        match binaries.get(0..exponent as usize) {
+            Some(msb_values) => {
+                let mut msb_values: Vec<u8> = msb_values.to_vec();
+                msb_values.insert(0, 1);
+                let msb_value_str = msb_values
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<String>>()
+                    .concat();
+                match i32::from_str_radix(&msb_value_str, 2) {
+                    Ok(msb_value) => match binaries.get(exponent as usize..) {
+                        Some(lsb_values) => {
+                            let mut lsb_value: f32 = 0.0;
+                            for (index, value) in lsb_values.iter().enumerate() {
+                                lsb_value +=
+                                    value.to_owned() as f32 * 2f32.powi(-(index as i32 + 1));
+                            }
+                            Ok(msb_value as f32 + lsb_value)
+                        }
+                        None => Err(ValidationError::InvalidLSBMantissa),
+                    },
+                    Err(_) => Err(ValidationError::InvalidMSBMantissa),
                 }
-                Ok(mantissa)
             }
             None => Err(ValidationError::EmptyMantissa),
         }
@@ -293,12 +310,12 @@ mod tests {
 
     #[test]
     fn test_64bit() {
-        // -85.49194552276862
+        // -74.74597276138431
         let values = vec![0xc0, 0x52, 0xaf, 0xbe, 0x4, 0x89, 0x76, 0x8e];
         let test: IEEE754 = IEEE754::new(values.clone());
         println!("Input: {:x?}", values);
-        println!("Expected Output: {}", -85.49194552276862);
-        assert_eq!(-85.49194552276862, test.to_64bit().unwrap());
+        println!("Expected Output: {}", -74.74597276138431);
+        assert_eq!(-74.74597276138431, test.to_64bit().unwrap());
 
         // -3.125
         let values = vec![0xc0, 0x09, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
