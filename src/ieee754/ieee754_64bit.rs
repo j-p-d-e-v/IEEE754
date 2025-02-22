@@ -1,5 +1,5 @@
+use crate::helper::{ComputeMantissaBits, SplitFloat};
 use crate::ieee754::validation::ValidationError;
-
 #[derive(Debug)]
 pub struct IEEE754_64bit {}
 
@@ -11,7 +11,7 @@ impl IEEE754_64bit {
         if exponent_binaries.len() != 11 {
             return Err(ValidationError::InvalidBitLength);
         }
-        // Infitnity Validation
+        // Infinity Validation
         let all_1s: &[u8; 11] = &[1; 11];
         let all_0s: &[u8; 11] = &[0; 11];
         if exponent_binaries == all_1s {
@@ -74,5 +74,76 @@ impl IEEE754_64bit {
             }
             None => Err(ValidationError::EmptyMantissa),
         }
+    }
+
+    pub fn get_binary(value: f64) -> Result<Vec<u8>, String> {
+        let split_float: (u8, u64, f64) = SplitFloat::f64(value)?;
+
+        let sign_bit: u8 = split_float.0;
+
+        // Integer Part
+        let mut integer_part: u64 = split_float.1;
+        let mut integer_part_bin: Vec<u8> = Vec::new();
+        loop {
+            if integer_part == 0 {
+                break;
+            }
+
+            let remainder: u8 = (integer_part % 2) as u8;
+            integer_part_bin.push(remainder);
+            integer_part = integer_part / 2;
+        }
+
+        // Fractional Part
+        let mut fractional_part: f64 = split_float.2;
+        let mut fractional_part_bin: Vec<u8> = Vec::new();
+        loop {
+            if fractional_part == 0.0 || fractional_part_bin.len() > 52 {
+                break;
+            }
+
+            fractional_part = fractional_part * 2.0;
+            let front_number: u8 = fractional_part as u8;
+            fractional_part_bin.push(front_number);
+            fractional_part = SplitFloat::f64(fractional_part)?.2;
+        }
+
+        let bias: i32 = 1023;
+        let mut exponent: i32 = 0;
+        if integer_part_bin.len() > 0 {
+            exponent = (integer_part_bin.len() as i32 - 1) as i32;
+            exponent = exponent + bias;
+        }
+
+        let mut exponent_bin: Vec<u8> = Vec::new();
+        loop {
+            if exponent == 0 || exponent_bin.len() == 11 {
+                break;
+            }
+            let remainder: u8 = (exponent % 2) as u8;
+            exponent_bin.push(remainder);
+            exponent = exponent / 2;
+        }
+        if exponent_bin.len() > 0 {
+            exponent_bin.reverse();
+        }
+        if integer_part_bin.len() > 0 {
+            integer_part_bin.reverse();
+            integer_part_bin.remove(0);
+        }
+        let mut mantissa_bin: Vec<u8> = Vec::new();
+        mantissa_bin.append(&mut integer_part_bin);
+        mantissa_bin.append(&mut fractional_part_bin);
+        if mantissa_bin.len() > 52 {
+            mantissa_bin = ComputeMantissaBits::compute(mantissa_bin, 52usize)?;
+        }
+
+        let mut binary: Vec<u8> = Vec::new();
+        binary.push(sign_bit);
+        binary.append(&mut exponent_bin);
+        binary.append(&mut mantissa_bin);
+
+        binary.resize(64, 0);
+        Ok(binary)
     }
 }
